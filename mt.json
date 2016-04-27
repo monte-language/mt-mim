@@ -1,0 +1,6 @@
+{
+    "name": "mim",
+    "paths": ["."],
+    "entrypoint": "mim",
+    "dependencies": {}
+}
