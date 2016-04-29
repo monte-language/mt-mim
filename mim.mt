@@ -1,6 +1,35 @@
 import "lib/codec/utf8" =~ [=> UTF8 :DeepFrozen]
 exports (main)
 
+def prettyList(l) :Str as DeepFrozen:
+    object TAIL as DeepFrozen {}
+
+    def pieces := [].diverge()
+    def stack := [l].diverge()
+
+    def pad(s):
+        def padding := "  " * stack.size()
+        pieces.push(padding + s)
+
+    while (stack.size() != 0):
+        switch (stack.pop()):
+            match [==TAIL, [head] + tail]:
+                stack.push([TAIL, tail])
+                stack.push(head)
+            match [==TAIL, []]:
+                pad("]")
+            match [head] + tail:
+                if (head =~ _ :List):
+                    pad("[")
+                    stack.push(head)
+                else:
+                    pad(`[${M.toQuote(head)},`)
+                stack.push([TAIL, tail])
+            match item:
+                pad(`${M.toQuote(item)},`)
+
+    return "\n".join(pieces)
+
 def decodeMAST(bs :Bytes, ej) as DeepFrozen:
     # Magic number.
     def b`Mont$\xe0MAST$\x00@{var stream}` exit ej := bs
@@ -50,8 +79,8 @@ def decodeMAST(bs :Bytes, ej) as DeepFrozen:
         return [for _ in (0..!size) decodePatt()]
 
     while (stream.size() != 0):
-        traceln(`Stream has ${stream.size()} elts remaining`)
-        traceln(`Exprs: ${exprs.size()} Patts: ${patts.size()}`)
+        # traceln(`Stream has ${stream.size()} elts remaining`)
+        # traceln(`Exprs: ${exprs.size()} Patts: ${patts.size()}`)
         switch (stream):
             match b`LN@rest`:
                 stream := rest
@@ -211,12 +240,47 @@ def decodeMAST(bs :Bytes, ej) as DeepFrozen:
                 throw.eject(ej, "Couldn't match any MAST node")
     return exprs.pop()
 
+def listOf(transformer) as DeepFrozen:
+    return def viaListOf(obj, ej):
+        def l :List exit ej := obj
+        return [for v in (l) transformer(v, ej)]
+
+def defsBecomeLets(ast, ej) as DeepFrozen:
+    "Replace all DefExprs with LetExprs."
+
+    return switch (ast):
+        match [=="EscapeExpr", patt, via (defsBecomeLets) expr]:
+            ["EscapeExpr", patt, expr]
+        match [=="EscapeExpr", patt, via (defsBecomeLets) expr, catchPatt,
+               via (defsBecomeLets) catchExpr]:
+            ["EscapeExpr", patt, expr, catchPatt, catchExpr]
+        match [=="MethodExpr", doc, verb, patts, namedPatts, guard,
+               via (defsBecomeLets) body]:
+            ["MethodExpr", doc, verb, patts, namedPatts, guard, body]
+        match [=="ObjExpr", doc, patt, via (defsBecomeLets) asExpr,
+               via (listOf(defsBecomeLets)) auditors,
+               via (listOf(defsBecomeLets)) methods,
+               via (listOf(defsBecomeLets)) matchers]:
+            ["ObjExpr", doc, patt, asExpr, auditors, methods, matchers]
+        match [=="SeqExpr", exprs]:
+            var chain := []
+            for expr in (exprs.reverse()):
+                if (expr =~ [=="DefExpr", patt, ex, rhs]):
+                    chain := [["LetExpr", rhs, ex, patt, chain.reverse()]]
+                else:
+                    chain with= (defsBecomeLets(expr, ej))
+            if (chain =~ [v]) {v} else {["SeqExpr", chain.reverse()]}
+        match x:
+            traceln(`Next tag: $x`)
+            x
+
 def main(argv, => makeFileResource, => makeStdOut) as DeepFrozen:
     def path := argv.last()
     def handle := makeFileResource(path)
     def stdout := makeStdOut()
     return when (def bs := handle<-getContents()) ->
-        def ast := decodeMAST(bs, null)
-        def via (UTF8.encode) s := M.toQuote(ast)
+        var ast := decodeMAST(bs, null)
+        ast := defsBecomeLets(ast, null)
+        def via (UTF8.encode) s := prettyList(ast)
         stdout<-receive(s)
         0
